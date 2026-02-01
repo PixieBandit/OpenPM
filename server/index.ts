@@ -755,10 +755,95 @@ app.post('/api/generate', async (req, res) => {
     }
 });
 
+// ============================================
+// ANTHROPIC CLAUDE API PROXY
+// ============================================
+const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+
+app.post('/api/claude/generate', async (req, res) => {
+    const apiKey = req.headers['x-api-key'] as string;
+    const { model, stream, messages, system, max_tokens } = req.body;
+
+    if (!apiKey) {
+        return res.status(401).json({ error: 'Anthropic API key required. Set it in Settings.' });
+    }
+
+    if (!model) {
+        return res.status(400).json({ error: 'Model is required' });
+    }
+
+    try {
+        const requestBody: any = {
+            model,
+            max_tokens: max_tokens || 4096,
+            messages: messages || []
+        };
+
+        if (system) {
+            requestBody.system = system;
+        }
+
+        if (stream) {
+            requestBody.stream = true;
+        }
+
+        console.log(`[Claude] Request to ${model}, stream=${!!stream}`);
+
+        const response = await fetch(ANTHROPIC_API_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+            const errorData = await safeJsonParse(response);
+            console.error('[Claude] API Error:', errorData);
+            return res.status(response.status).json(errorData);
+        }
+
+        if (stream) {
+            // Stream response back to client
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+
+            const reader = response.body?.getReader();
+            if (!reader) {
+                return res.status(500).json({ error: 'Failed to get response stream' });
+            }
+
+            const decoder = new TextDecoder();
+
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value, { stream: true });
+                    res.write(chunk);
+                }
+            } finally {
+                res.end();
+            }
+        } else {
+            const data = await safeJsonParse(response);
+            res.json({ ...data, source: 'anthropic-direct' });
+        }
+    } catch (error: any) {
+        console.error('[Claude] Proxy Error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Start server
 app.listen(PORT, () => {
     console.log(`🚀 AetherSync Backend running on http://localhost:${PORT}`);
     console.log(`   Proxying to Cloud AI Companion (AntiGravity compatible)`);
+    console.log(`   Anthropic Claude API proxy enabled`);
     console.log(`   Persistence enabled at: ${DATA_DIR} (tasks, docs, logs, config)`);
 });
 

@@ -27,7 +27,8 @@ const GEMINI_SCOPES = [
     'https://www.googleapis.com/auth/userinfo.email'
 ].join(' ');
 
-const API_URL = 'http://localhost:3001/api';
+// Use centralized config - fallback for safety
+const API_URL = 'http://localhost:3001/api'; // TODO: Import from config when circular deps resolved
 
 // Request access token using the backend Antigravity flow
 export const requestAccessToken = async (): Promise<AuthTokens> => {
