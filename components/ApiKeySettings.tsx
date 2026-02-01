@@ -7,6 +7,13 @@ import {
     ApiProvider
 } from '../services/apiKeys';
 
+// Console URLs for quick setup
+const CONSOLE_URLS: Record<ApiProvider, string> = {
+    gemini: 'https://aistudio.google.com/app/apikey',
+    anthropic: 'https://console.anthropic.com/account/keys',
+    openai: 'https://platform.openai.com/api-keys'
+};
+
 interface ApiKeySettingsProps {
     onKeysChanged?: () => void;
 }
@@ -17,6 +24,7 @@ const ApiKeySettings: React.FC<ApiKeySettingsProps> = ({ onKeysChanged }) => {
     const [inputValue, setInputValue] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
+    const [quickSetupProvider, setQuickSetupProvider] = useState<ApiProvider | null>(null);
 
     useEffect(() => {
         setKeyStatus(getApiKeyStatus());
@@ -45,18 +53,30 @@ const ApiKeySettings: React.FC<ApiKeySettingsProps> = ({ onKeysChanged }) => {
         onKeysChanged?.();
     };
 
-    const providers: { id: ApiProvider; name: string; description: string; color: string }[] = [
+    const handleQuickSetup = (provider: ApiProvider) => {
+        // Open the provider's console in a new tab
+        window.open(CONSOLE_URLS[provider], '_blank');
+        // Switch to quick setup mode with editing enabled
+        setQuickSetupProvider(provider);
+        setEditingProvider(provider);
+        setInputValue('');
+        setError(null);
+    };
+
+    const providers: { id: ApiProvider; name: string; description: string; color: string; supportsQuickSetup: boolean }[] = [
         {
             id: 'gemini',
             name: 'Google Gemini',
             description: 'Get your key from Google AI Studio',
-            color: 'blue'
+            color: 'blue',
+            supportsQuickSetup: true
         },
         {
             id: 'anthropic',
             name: 'Anthropic Claude',
             description: 'Get your key from console.anthropic.com',
-            color: 'orange'
+            color: 'orange',
+            supportsQuickSetup: true
         }
     ];
 
@@ -109,6 +129,18 @@ const ApiKeySettings: React.FC<ApiKeySettingsProps> = ({ onKeysChanged }) => {
 
                         {editingProvider === provider.id ? (
                             <div className="space-y-2">
+                                {quickSetupProvider === provider.id && (
+                                    <div className="p-3 bg-indigo-900/20 border border-indigo-500/30 rounded-lg mb-2">
+                                        <p className="text-[10px] text-indigo-300 font-medium mb-2">
+                                            Quick Setup Instructions:
+                                        </p>
+                                        <ol className="text-[9px] text-indigo-200/80 space-y-1 list-decimal list-inside">
+                                            <li>A new tab opened to {provider.name} Console</li>
+                                            <li>Create a new API key there</li>
+                                            <li>Copy the key and paste it below</li>
+                                        </ol>
+                                    </div>
+                                )}
                                 <input
                                     type="password"
                                     value={inputValue}
@@ -130,6 +162,7 @@ const ApiKeySettings: React.FC<ApiKeySettingsProps> = ({ onKeysChanged }) => {
                                     <button
                                         onClick={() => {
                                             setEditingProvider(null);
+                                            setQuickSetupProvider(null);
                                             setInputValue('');
                                             setError(null);
                                         }}
@@ -141,9 +174,19 @@ const ApiKeySettings: React.FC<ApiKeySettingsProps> = ({ onKeysChanged }) => {
                             </div>
                         ) : (
                             <div className="flex gap-2">
+                                {!keyStatus[provider.id].set && provider.supportsQuickSetup && (
+                                    <button
+                                        onClick={() => handleQuickSetup(provider.id)}
+                                        className="flex-1 py-2 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold uppercase rounded-lg transition-colors"
+                                        aria-label={`Quick setup for ${provider.name}`}
+                                    >
+                                        Quick Setup
+                                    </button>
+                                )}
                                 <button
                                     onClick={() => {
                                         setEditingProvider(provider.id);
+                                        setQuickSetupProvider(null);
                                         setInputValue('');
                                         setError(null);
                                     }}
@@ -152,6 +195,7 @@ const ApiKeySettings: React.FC<ApiKeySettingsProps> = ({ onKeysChanged }) => {
                                             ? 'bg-slate-800 hover:bg-slate-700 text-slate-400'
                                             : 'bg-indigo-600 hover:bg-indigo-500 text-white'
                                     }`}
+                                    aria-label={keyStatus[provider.id].set ? `Update ${provider.name} key` : `Add ${provider.name} key manually`}
                                 >
                                     {keyStatus[provider.id].set ? 'Update Key' : 'Add Key'}
                                 </button>
@@ -159,6 +203,7 @@ const ApiKeySettings: React.FC<ApiKeySettingsProps> = ({ onKeysChanged }) => {
                                     <button
                                         onClick={() => handleRemoveKey(provider.id)}
                                         className="px-4 py-2 bg-rose-900/30 hover:bg-rose-800/50 text-rose-400 text-[10px] font-bold uppercase rounded-lg transition-colors border border-rose-900/50"
+                                        aria-label={`Remove ${provider.name} key`}
                                     >
                                         Remove
                                     </button>
