@@ -11,6 +11,21 @@ import crypto from 'crypto';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Safe JSON parsing helper to handle non-JSON responses (e.g., HTML error pages)
+const safeJsonParse = async (response: Response): Promise<any> => {
+    const text = await response.text();
+    try {
+        return JSON.parse(text);
+    } catch (e) {
+        // Return a structured error if JSON parsing fails
+        return {
+            error: 'Non-JSON response',
+            status: response.status,
+            body: text.substring(0, 500) // Truncate for safety
+        };
+    }
+};
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 const DATA_DIR = path.join(__dirname, 'data');
@@ -32,7 +47,11 @@ const loadEnvLocal = async () => {
         for (const line of content.split('\n')) {
             const trimmed = line.trim();
             if (trimmed.startsWith('GOOGLE_API_KEY=') || trimmed.startsWith('GEMINI_API_KEY=') || trimmed.startsWith('NEXT_PUBLIC_GEMINI_API_KEY=')) {
-                LOCAL_API_KEY = trimmed.split('=')[1].trim();
+                const parts = trimmed.split('=');
+                // Safely access the value part (handle edge case of "KEY=" with no value)
+                if (parts.length >= 2 && parts[1]) {
+                    LOCAL_API_KEY = parts.slice(1).join('=').trim(); // Handle values containing '='
+                }
                 break;
             }
         }
@@ -257,7 +276,7 @@ app.get('/api/models', async (req, res) => {
             });
         }
 
-        const data = await response.json();
+        const data = await safeJsonParse(response);
         res.json(data);
     } catch (error: any) {
         console.error('Models fetch error:', error);
@@ -405,7 +424,7 @@ app.get('/api/debug/account-limits', async (req, res) => {
                     }
                 })
             });
-            const data = await response.json() as any;
+            const data = await safeJsonParse(response) as any;
             results.endpoints[baseUrl] = {
                 status: response.status,
                 ok: response.ok,
@@ -559,7 +578,7 @@ app.get('/api/debug/list-public-models', async (req, res) => {
             headers: { 'Content-Type': 'application/json' }
         });
 
-        const data = await response.json();
+        const data = await safeJsonParse(response);
 
         if (!response.ok) {
             return res.status(response.status).json(data);
@@ -727,7 +746,7 @@ app.post('/api/generate', async (req, res) => {
             res.setHeader('Content-Type', 'text/event-stream');
             finalResponse.body.pipe(res);
         } else {
-            const data = await finalResponse.json() as any;
+            const data = await safeJsonParse(finalResponse) as any;
             res.json({ ...data, source: finalSource });
         }
     } else {
@@ -736,10 +755,95 @@ app.post('/api/generate', async (req, res) => {
     }
 });
 
+// ============================================
+// ANTHROPIC CLAUDE API PROXY
+// ============================================
+const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+
+app.post('/api/claude/generate', async (req, res) => {
+    const apiKey = req.headers['x-api-key'] as string;
+    const { model, stream, messages, system, max_tokens } = req.body;
+
+    if (!apiKey) {
+        return res.status(401).json({ error: 'Anthropic API key required. Set it in Settings.' });
+    }
+
+    if (!model) {
+        return res.status(400).json({ error: 'Model is required' });
+    }
+
+    try {
+        const requestBody: any = {
+            model,
+            max_tokens: max_tokens || 4096,
+            messages: messages || []
+        };
+
+        if (system) {
+            requestBody.system = system;
+        }
+
+        if (stream) {
+            requestBody.stream = true;
+        }
+
+        console.log(`[Claude] Request to ${model}, stream=${!!stream}`);
+
+        const response = await fetch(ANTHROPIC_API_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+            const errorData = await safeJsonParse(response);
+            console.error('[Claude] API Error:', errorData);
+            return res.status(response.status).json(errorData);
+        }
+
+        if (stream) {
+            // Stream response back to client
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+
+            const reader = response.body?.getReader();
+            if (!reader) {
+                return res.status(500).json({ error: 'Failed to get response stream' });
+            }
+
+            const decoder = new TextDecoder();
+
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value, { stream: true });
+                    res.write(chunk);
+                }
+            } finally {
+                res.end();
+            }
+        } else {
+            const data = await safeJsonParse(response);
+            res.json({ ...data, source: 'anthropic-direct' });
+        }
+    } catch (error: any) {
+        console.error('[Claude] Proxy Error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Start server
 app.listen(PORT, () => {
     console.log(`🚀 AetherSync Backend running on http://localhost:${PORT}`);
     console.log(`   Proxying to Cloud AI Companion (AntiGravity compatible)`);
+    console.log(`   Anthropic Claude API proxy enabled`);
     console.log(`   Persistence enabled at: ${DATA_DIR} (tasks, docs, logs, config)`);
 });
 

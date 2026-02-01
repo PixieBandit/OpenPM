@@ -1,29 +1,24 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import fetch from "node-fetch";
+import {
+    OAUTH_CLIENT_ID,
+    OAUTH_CLIENT_SECRET,
+    OAUTH_REDIRECT_URI,
+    AUTH_URL,
+    TOKEN_URL,
+    DEFAULT_PROJECT_ID,
+    OAUTH_SCOPES,
+    CODE_ASSIST_ENDPOINTS,
+    CALLBACK_PORT,
+    AUTH_TIMEOUT_MS,
+    validateOAuthConfig
+} from "./config";
 
-// OAuth constants - using Antigravity's official credentials (from antigravity-claude-proxy)
-// These credentials have Cloud Code Private API access enabled
-const CLIENT_ID = '1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com';
-const CLIENT_SECRET = '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';
-const REDIRECT_URI = "http://localhost:51121/oauth-callback";
-const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
-const TOKEN_URL = "https://oauth2.googleapis.com/token";
-const DEFAULT_PROJECT_ID = "rising-fact-p41fc";
-
-const SCOPES = [
-    "https://www.googleapis.com/auth/cloud-platform",
-    "https://www.googleapis.com/auth/userinfo.email",
-    "https://www.googleapis.com/auth/userinfo.profile",
-    "https://www.googleapis.com/auth/cclog",
-    "https://www.googleapis.com/auth/experimentsandconfigs",
-];
-
-// Endpoints for loadCodeAssist project discovery (prod first, then daily)
-const CODE_ASSIST_ENDPOINTS = [
-    "https://cloudcode-pa.googleapis.com",
-    "https://daily-cloudcode-pa.googleapis.com",
-];
+// Validate OAuth config on module load
+if (!validateOAuthConfig()) {
+    console.error('[Auth] WARNING: OAuth credentials not configured. Authentication will fail.');
+}
 
 const RESPONSE_PAGE = `<!DOCTYPE html>
 <html lang="en">
@@ -64,10 +59,10 @@ function generatePkce() {
 
 function buildAuthUrl(params: { challenge: string; state: string }): string {
     const url = new URL(AUTH_URL);
-    url.searchParams.set("client_id", CLIENT_ID);
+    url.searchParams.set("client_id", OAUTH_CLIENT_ID);
     url.searchParams.set("response_type", "code");
-    url.searchParams.set("redirect_uri", REDIRECT_URI);
-    url.searchParams.set("scope", SCOPES.join(" "));
+    url.searchParams.set("redirect_uri", OAUTH_REDIRECT_URI);
+    url.searchParams.set("scope", OAUTH_SCOPES.join(" "));
     url.searchParams.set("code_challenge", params.challenge);
     url.searchParams.set("code_challenge_method", "S256");
     url.searchParams.set("state", params.state);
@@ -84,11 +79,11 @@ async function exchangeCode(params: {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({
-            client_id: CLIENT_ID,
-            client_secret: CLIENT_SECRET,
+            client_id: OAUTH_CLIENT_ID,
+            client_secret: OAUTH_CLIENT_SECRET,
             code: params.code,
             grant_type: "authorization_code",
-            redirect_uri: REDIRECT_URI,
+            redirect_uri: OAUTH_REDIRECT_URI,
             code_verifier: params.verifier,
         }),
     });
@@ -173,8 +168,7 @@ let callbackServer: ReturnType<typeof createServer> | null = null;
 function ensureCallbackServer() {
     if (callbackServer) return;
 
-    const url = new URL(REDIRECT_URI);
-    const port = Number(url.port) || 51121;
+    const port = CALLBACK_PORT;
 
     callbackServer = createServer(async (req, res) => {
         if (!req.url) return;
@@ -237,13 +231,13 @@ export async function startAuth() {
 
     // Create a promise that resolves when the callback is hit
     const resultPromise = new Promise((resolve, reject) => {
-        // Timeout after 5 minutes
+        // Timeout after configured duration
         const timer = setTimeout(() => {
             if (pendingAuths.has(state)) {
                 pendingAuths.delete(state);
                 reject(new Error("Auth timed out"));
             }
-        }, 5 * 60 * 1000);
+        }, AUTH_TIMEOUT_MS);
 
         pendingAuths.set(state, { verifier, state, resolve, reject, timer });
     });

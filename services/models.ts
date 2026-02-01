@@ -1,11 +1,10 @@
 
 // Models Service - Fetches available models via backend proxy
 import { getAccessToken } from './auth';
+import { API_BASE_URL, GEMINI_API_BASE } from '../config';
+import { hasApiKey } from './apiKeys';
 
-// Backend proxy server (bypasses CORS, uses Cloud AI Companion)
-const BACKEND_URL = 'http://localhost:3001/api';
-// Fallback for API key
-const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+export type ModelProvider = 'google' | 'anthropic' | 'openai' | 'antigravity';
 
 export interface GeminiModel {
     id: string;           // e.g., "gemini-2.0-flash"
@@ -15,50 +14,72 @@ export interface GeminiModel {
     inputTokenLimit: number;
     outputTokenLimit: number;
     supportsGeneration: boolean;
+    provider: ModelProvider;
+    requiresApiKey?: boolean; // True if needs user's API key (not Antigravity)
 }
 
-// Cache for models
-let cachedModels: GeminiModel[] | null = null;
-
 /**
- * Fetch available models - returns curated list for Antigravity
- * These models are available via Google Cloud Code Assist
+ * Fetch available models - returns models filtered by available API keys
  */
 export const fetchAvailableModels = async (): Promise<GeminiModel[]> => {
-    // Return cached if available
-    if (cachedModels) {
-        return cachedModels;
-    }
-
-    // Use curated list of Antigravity-compatible models only
-    cachedModels = getDefaultModels();
-    console.log(`Loaded ${cachedModels.length} curated models`);
-    return cachedModels;
+    // Don't cache - recompute based on current API key status
+    const models = getAvailableModels();
+    console.log(`Loaded ${models.length} available models (filtered by API keys)`);
+    return models;
 };
 
 /**
  * Get default/fallback models if API fetch fails
  */
 export const getDefaultModels = (): GeminiModel[] => [
-    // Gemini 3 models - use correct Antigravity model IDs
-    { id: 'gemini-3-pro-preview', name: 'models/gemini-3-pro-preview', displayName: 'Gemini 3 Pro Preview', description: 'Next-gen pro model (Preview)', inputTokenLimit: 2000000, outputTokenLimit: 8192, supportsGeneration: true },
-    { id: 'gemini-3-flash-preview', name: 'models/gemini-3-flash-preview', displayName: 'Gemini 3 Flash Preview', description: 'Fast next-gen model (Preview)', inputTokenLimit: 1000000, outputTokenLimit: 8192, supportsGeneration: true },
-    // Claude models via Antigravity
-    { id: 'claude-sonnet-4-5', name: 'models/claude-sonnet-4-5', displayName: 'Claude Sonnet 4.5', description: 'Anthropic Sonnet via Antigravity', inputTokenLimit: 200000, outputTokenLimit: 8192, supportsGeneration: true },
-    { id: 'claude-sonnet-4-5-thinking', name: 'models/claude-sonnet-4-5-thinking', displayName: 'Claude Sonnet 4.5 (Thinking)', description: 'Sonnet with extended thinking', inputTokenLimit: 200000, outputTokenLimit: 8192, supportsGeneration: true },
-    { id: 'claude-opus-4-5-thinking', name: 'models/claude-opus-4-5-thinking', displayName: 'Claude Opus 4.5 (Thinking)', description: 'Most capable Claude model', inputTokenLimit: 200000, outputTokenLimit: 8192, supportsGeneration: true },
-    // GPT via Antigravity
-    { id: 'gpt-oss-120b-medium', name: 'models/gpt-oss-120b-medium', displayName: 'GPT-OSS 120B (Medium)', description: 'OpenAI-style model', inputTokenLimit: 128000, outputTokenLimit: 8192, supportsGeneration: true },
-    // Fallback Gemini 2.5 models (standard Gemini API compatible)
-    { id: 'gemini-2.5-pro', name: 'models/gemini-2.5-pro', displayName: 'Gemini 2.5 Pro', description: 'Stable Gemini 2.5 Pro', inputTokenLimit: 1000000, outputTokenLimit: 8192, supportsGeneration: true },
-    { id: 'gemini-2.0-flash', name: 'models/gemini-2.0-flash', displayName: 'Gemini 2.0 Flash', description: 'Fast Gemini 2.0 Flash', inputTokenLimit: 1000000, outputTokenLimit: 8192, supportsGeneration: true },
+    // === GEMINI MODELS (Google) ===
+    // Gemini 3 Flash - WORKING via API key
+    { id: 'gemini-2.0-flash', name: 'models/gemini-2.0-flash', displayName: 'Gemini 2.0 Flash', description: 'Fast, reliable (RECOMMENDED)', inputTokenLimit: 1000000, outputTokenLimit: 8192, supportsGeneration: true, provider: 'google', requiresApiKey: true },
+    { id: 'gemini-2.5-flash-preview-05-20', name: 'models/gemini-2.5-flash-preview-05-20', displayName: 'Gemini 2.5 Flash Preview', description: 'Latest Flash preview', inputTokenLimit: 1000000, outputTokenLimit: 8192, supportsGeneration: true, provider: 'google', requiresApiKey: true },
+    { id: 'gemini-2.5-pro-preview-05-06', name: 'models/gemini-2.5-pro-preview-05-06', displayName: 'Gemini 2.5 Pro Preview', description: 'Most capable Gemini', inputTokenLimit: 1000000, outputTokenLimit: 8192, supportsGeneration: true, provider: 'google', requiresApiKey: true },
+
+    // === ANTHROPIC CLAUDE MODELS (Direct API) ===
+    { id: 'claude-sonnet-4-20250514', name: 'claude-sonnet-4-20250514', displayName: 'Claude Sonnet 4', description: 'Latest Sonnet - balanced', inputTokenLimit: 200000, outputTokenLimit: 8192, supportsGeneration: true, provider: 'anthropic', requiresApiKey: true },
+    { id: 'claude-opus-4-20250514', name: 'claude-opus-4-20250514', displayName: 'Claude Opus 4', description: 'Most capable Claude', inputTokenLimit: 200000, outputTokenLimit: 8192, supportsGeneration: true, provider: 'anthropic', requiresApiKey: true },
+    { id: 'claude-3-5-haiku-20241022', name: 'claude-3-5-haiku-20241022', displayName: 'Claude 3.5 Haiku', description: 'Fast and affordable', inputTokenLimit: 200000, outputTokenLimit: 8192, supportsGeneration: true, provider: 'anthropic', requiresApiKey: true },
+
+    // === ANTIGRAVITY MODELS (via Cloud Code) ===
+    { id: 'gemini-3-flash-preview', name: 'models/gemini-3-flash-preview', displayName: '[AG] Gemini 3 Flash', description: 'Via Antigravity', inputTokenLimit: 1000000, outputTokenLimit: 8192, supportsGeneration: true, provider: 'antigravity' },
+    { id: 'claude-sonnet-4-5', name: 'models/claude-sonnet-4-5', displayName: '[AG] Claude Sonnet 4.5', description: 'Via Antigravity', inputTokenLimit: 200000, outputTokenLimit: 8192, supportsGeneration: true, provider: 'antigravity' },
 ];
 
 /**
+ * Get models filtered by available API keys
+ */
+export const getAvailableModels = (): GeminiModel[] => {
+    const allModels = getDefaultModels();
+    const hasGeminiKey = hasApiKey('gemini');
+    const hasAnthropicKey = hasApiKey('anthropic');
+
+    return allModels.filter(model => {
+        // Antigravity models are always shown (require OAuth, not API key)
+        if (model.provider === 'antigravity') return true;
+
+        // Google models need Gemini API key
+        if (model.provider === 'google' && model.requiresApiKey) {
+            return hasGeminiKey;
+        }
+
+        // Anthropic models need Anthropic API key
+        if (model.provider === 'anthropic' && model.requiresApiKey) {
+            return hasAnthropicKey;
+        }
+
+        return true;
+    });
+};
+
+/**
  * Clear the cached models (useful for refreshing)
+ * Note: Models are no longer cached, this is kept for API compatibility
  */
 export const clearModelCache = () => {
-    cachedModels = null;
+    // No-op - models are now dynamically computed based on API key status
 };
 
 /**

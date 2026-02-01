@@ -2,11 +2,8 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Task, ProjectDoc, WorkflowConfig, ChatMessage } from "../types";
 import { getAccessToken } from "./auth";
-
-// Backend proxy server (bypasses CORS, uses Cloud AI Companion)
-const BACKEND_URL = 'http://localhost:3001/api';
-// Fallback for API key (direct to Gemini API)
-const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+import { API_BASE_URL, GEMINI_API_BASE } from "../config";
+import { getApiKey } from "./apiKeys";
 
 // AbortController management for request cancellation
 let activeControllers: AbortController[] = [];
@@ -45,8 +42,8 @@ const removeController = (controller: AbortController): void => {
  * Get authentication for API - prefers OAuth, falls back to API key
  */
 const getAuth = async (): Promise<{ token?: string; apiKey?: string }> => {
-  /* Preferred: API Key (User provided) */
-  const apiKey = (process as any).env?.GOOGLE_API_KEY || (process as any).env?.API_KEY || (process as any).env?.GEMINI_API_KEY;
+  /* Preferred: User-provided API Key from settings */
+  const apiKey = getApiKey('gemini');
   if (apiKey) {
     return { apiKey };
   }
@@ -64,9 +61,113 @@ const getAuth = async (): Promise<{ token?: string; apiKey?: string }> => {
  * Create GoogleGenAI client - uses API key if OAuth not available
  */
 const createClient = (): GoogleGenAI => {
-  const apiKey = (process as any).env?.GOOGLE_API_KEY || (process as any).env?.API_KEY || (process as any).env?.GEMINI_API_KEY || '';
+  const apiKey = getApiKey('gemini') || '';
   return new GoogleGenAI({ apiKey });
 };
+
+/**
+ * Make Claude API request via backend proxy
+ */
+async function claudeRequest(
+  model: string,
+  contents: string | any[],
+  systemInstruction?: string,
+  config?: { temperature?: number; stream?: boolean },
+  controller?: AbortController
+): Promise<string | AsyncGenerator<string>> {
+  const apiKey = getApiKey('anthropic');
+  if (!apiKey) {
+    throw new Error('Anthropic API key not set. Please add your API key in Settings.');
+  }
+
+  // Convert Gemini-style contents to Claude messages format
+  let messages: Array<{ role: string; content: string }> = [];
+
+  if (typeof contents === 'string') {
+    messages = [{ role: 'user', content: contents }];
+  } else if (Array.isArray(contents)) {
+    messages = contents.map(msg => ({
+      role: msg.role === 'model' ? 'assistant' : 'user',
+      content: msg.parts?.map((p: any) => p.text).join('') || ''
+    }));
+  }
+
+  const requestBody: any = {
+    model,
+    messages,
+    max_tokens: 4096,
+    stream: config?.stream || false
+  };
+
+  if (systemInstruction) {
+    requestBody.system = systemInstruction;
+  }
+
+  const response = await fetch(`${API_BASE_URL}/claude/generate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey
+    },
+    body: JSON.stringify(requestBody),
+    signal: controller?.signal
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Claude API error: ${response.status} - ${errorText}`);
+  }
+
+  if (config?.stream) {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("Response body is not streamable");
+
+    async function* claudeStreamGenerator() {
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      try {
+        while (true) {
+          const { done, value } = await reader!.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          buffer += chunk;
+
+          // Parse Claude SSE format
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+            const dataStr = trimmed.slice(6);
+            if (dataStr === '[DONE]') continue;
+
+            try {
+              const data = JSON.parse(dataStr);
+              if (data.type === 'content_block_delta' && data.delta?.text) {
+                yield data.delta.text;
+              }
+            } catch (e) {
+              // Ignore parse errors
+            }
+          }
+        }
+      } finally {
+        if (controller) removeController(controller);
+      }
+    }
+    return claudeStreamGenerator();
+  }
+
+  const data = await response.json();
+  if (controller) removeController(controller);
+
+  // Extract text from Claude response
+  return data.content?.[0]?.text || '';
+}
 
 /**
  * Make authenticated API call
@@ -102,6 +203,11 @@ async function geminiRequest(
   }
 ): Promise<string | AsyncGenerator<string>> {
   const controller = createController();
+
+  // Route Claude models to Claude API
+  if (model.startsWith('claude-') && !model.includes('-mock')) {
+    return claudeRequest(model, contents, systemInstruction, config, controller);
+  }
 
   try {
     const auth = await getAuth();
@@ -143,8 +249,13 @@ async function geminiRequest(
       });
 
       async function* streamGenerator() {
-        for await (const chunk of result) {
-          yield chunk.text ?? '';
+        try {
+          for await (const chunk of result) {
+            yield chunk.text ?? '';
+          }
+        } finally {
+          // Clean up controller when stream completes or errors
+          removeController(controller);
         }
       }
       return streamGenerator();
@@ -156,11 +267,11 @@ async function geminiRequest(
       // For now, if streaming is requested but we must use proxy, we might need a fetch stream reader if backend supports it.
       // Assuming backend *might* not stream fully yet, we'll try to use fetch stream if possible or fallback.
       if (config?.stream) {
-        url = `${BACKEND_URL}/generate/stream`; // Heuristic: try a stream endpoint or flag
+        url = `${API_BASE_URL}/generate/stream`; // Heuristic: try a stream endpoint or flag
         // Actually, let's stick to the /generate endpoint but check if we can read the body.
-        url = `${BACKEND_URL}/generate`;
+        url = `${API_BASE_URL}/generate`;
       } else {
-        url = `${BACKEND_URL}/generate`;
+        url = `${API_BASE_URL}/generate`;
       }
 
       headers['Authorization'] = `Bearer ${auth.token}`;
@@ -218,31 +329,36 @@ async function geminiRequest(
         const decoder = new TextDecoder();
         let buffer = '';
 
-        while (true) {
-          const { done, value } = await reader!.read();
-          if (done) break;
+        try {
+          while (true) {
+            const { done, value } = await reader!.read();
+            if (done) break;
 
-          const chunk = decoder.decode(value, { stream: true });
-          buffer += chunk;
+            const chunk = decoder.decode(value, { stream: true });
+            buffer += chunk;
 
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || ''; // Keep the last incomplete line in buffer
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || ''; // Keep the last incomplete line in buffer
 
-          for (const line of lines) {
-            const trimmedLine = line.trim();
-            if (!trimmedLine || trimmedLine === ': keep-alive') continue;
+            for (const line of lines) {
+              const trimmedLine = line.trim();
+              if (!trimmedLine || trimmedLine === ': keep-alive') continue;
 
-            if (trimmedLine.startsWith('data: ')) {
-              const dataStr = trimmedLine.slice(6);
-              try {
-                const data = JSON.parse(dataStr);
-                const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (text) yield text;
-              } catch (e) {
-                // Ignore parse errors for partial chunks or connection messages
+              if (trimmedLine.startsWith('data: ')) {
+                const dataStr = trimmedLine.slice(6);
+                try {
+                  const data = JSON.parse(dataStr);
+                  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                  if (text) yield text;
+                } catch (e) {
+                  // Ignore parse errors for partial chunks or connection messages
+                }
               }
             }
           }
+        } finally {
+          // Clean up controller when stream completes or errors
+          removeController(controller);
         }
       }
       return fetchStreamGenerator();
@@ -257,33 +373,38 @@ async function geminiRequest(
   }
 };
 
-// Helper to resolve mock model IDs to real Gemini models
+// Helper to resolve mock model IDs to real models
 const resolveModel = (modelId: string | undefined): string => {
-  // If no model, use default (Gemini 3 Flash for speed)
-  if (!modelId) return 'gemini-3-flash-preview';
+  // If no model, use default (Gemini 2.0 Flash - confirmed working)
+  if (!modelId) return 'gemini-2.0-flash';
 
-  // Map legacy/dotted model IDs to correct Antigravity-compatible IDs
+  // Map legacy/dotted model IDs to correct IDs
   const modelMap: Record<string, string> = {
-    // Fix -preview suffix models that don't exist in Cloud AI Companion
-    // 'gemini-3-pro-preview': 'gemini-3-pro-high', // ALLOW gemini-3-pro-preview for direct API usage
-    'gemini-3-flash': 'gemini-3-flash-preview', // Map non-preview to preview (Public API requires preview)
-    'gemini-3-pro-high': 'gemini-3-pro-preview', // Map internal IDs to Public Preview
-    'gemini-3-pro-low': 'gemini-3-pro-preview',
-
-    // Handle old dotted Claude versions (Google requires hyphens: 4-5 not 4.5)
-    'claude-opus-4.5-thinking': 'claude-opus-4-5-thinking',
-    'claude-sonnet-4.5-thinking': 'claude-sonnet-4-5-thinking',
-    'claude-sonnet-4.5': 'claude-sonnet-4-5',
-    // Legacy mock models
-    'gemini-1.5-pro-claude-mock': 'claude-opus-4-5-thinking',
-    'gemini-1.5-pro-claude-thinking-mock': 'claude-sonnet-4-5-thinking',
-    'gemini-1.5-pro-opus-mock': 'claude-opus-4-5-thinking',
-    'gemini-1.5-pro-gpt-mock': 'gpt-oss-120b-medium',
-    // Old Gemini versions -> stable 2.x versions
+    // Gemini mappings - prefer stable 2.0/2.5 versions
+    'gemini-3-flash': 'gemini-2.0-flash',
+    'gemini-3-flash-preview': 'gemini-2.0-flash', // Map to working model
+    'gemini-3-pro-preview': 'gemini-2.5-pro-preview-05-06',
+    'gemini-3-pro-high': 'gemini-2.5-pro-preview-05-06',
+    'gemini-3-pro-low': 'gemini-2.5-pro-preview-05-06',
     'gemini-1.5-flash': 'gemini-2.0-flash',
     'gemini-1.5-flash-001': 'gemini-2.0-flash',
-    'gemini-1.5-pro': 'gemini-2.5-pro',
-    'gemini-1.5-pro-001': 'gemini-2.5-pro',
+    'gemini-1.5-pro': 'gemini-2.5-pro-preview-05-06',
+    'gemini-1.5-pro-001': 'gemini-2.5-pro-preview-05-06',
+
+    // Claude Antigravity IDs -> Direct API IDs
+    'claude-sonnet-4-5': 'claude-sonnet-4-20250514',
+    'claude-sonnet-4-5-thinking': 'claude-sonnet-4-20250514',
+    'claude-opus-4-5-thinking': 'claude-opus-4-20250514',
+
+    // Handle old dotted Claude versions
+    'claude-opus-4.5-thinking': 'claude-opus-4-20250514',
+    'claude-sonnet-4.5-thinking': 'claude-sonnet-4-20250514',
+    'claude-sonnet-4.5': 'claude-sonnet-4-20250514',
+
+    // Legacy mock models -> real models
+    'gemini-1.5-pro-claude-mock': 'claude-opus-4-20250514',
+    'gemini-1.5-pro-claude-thinking-mock': 'claude-sonnet-4-20250514',
+    'gemini-1.5-pro-opus-mock': 'claude-opus-4-20250514',
   };
 
   // Check if this model needs mapping
@@ -599,7 +720,7 @@ export const listAvailableModels = async () => {
     if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
 
     // Use backend proxy for list models
-    const res = await fetch(`${BACKEND_URL}/models`, {
+    const res = await fetch(`${API_BASE_URL}/models`, {
       method: 'GET',
       headers
     });

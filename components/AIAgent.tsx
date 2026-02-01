@@ -6,6 +6,7 @@ import { scanProjectDirectory, createProjectContext, generateProjectSummaryDoc }
 import { AgentAvatar } from './AgentAvatar';
 import { acousticEngine } from '../services/audio';
 import ReactMarkdown from 'react-markdown';
+import ApiKeySettings from './ApiKeySettings';
 
 interface AIAgentProps {
   messages: ChatMessage[];
@@ -412,6 +413,17 @@ const AIAgent: React.FC<AIAgentProps> = ({
                   </div>
                 </div>
               </Section>
+
+              <Section id="apikeys" title="API Keys">
+                <ApiKeySettings onKeysChanged={() => {
+                  // Refresh available models when keys change
+                  fetchAvailableModels().then(models => {
+                    setAvailableModels(models);
+                    console.log('Refreshed models after API key change:', models.map(m => m.id));
+                  });
+                }} />
+              </Section>
+
               <Section id="neural" title="Neural Core Tuning">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                   <div className="space-y-6">
