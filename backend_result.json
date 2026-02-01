@@ -1,0 +1,21 @@
+{
+  "success": true,
+  "model": "gemini-3-flash-preview",
+  "projectId": "rising-fact-p41fc",
+  "usingIdeToken": true,
+  "hasApiKey": true,
+  "tests": {
+    "AntigravityProd": {
+      "status": 429,
+      "ok": false,
+      "statusText": "Too Many Requests",
+      "error": "Resource has been exhausted (e.g. check quota)."
+    },
+    "StandardGeminiAPIKey": {
+      "status": 200,
+      "ok": true,
+      "statusText": "OK",
+      "usedKey": "AIzaSyDAIN..."
+    }
+  }
+}

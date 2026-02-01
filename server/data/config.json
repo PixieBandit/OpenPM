@@ -1,0 +1,22 @@
+{
+  "clarificationLevel": "MODERATE",
+  "autoTaskGeneration": true,
+  "autoResolveMinorBugs": true,
+  "memoryDepth": 14,
+  "personality": "SCIENTIFIC",
+  "novaPower": 80,
+  "sparkPower": 60,
+  "testerPower": 70,
+  "novaRules": "1. Prioritize cooling overhead safety.\n2. Always include risk assessment for new directives.",
+  "sparkRules": "1. Use modular architecture.\n2. Prioritize energy efficiency.",
+  "testerRules": "1. Thoroughly stress test all cooling sub-routines.\n2. Flag any gravimetric jitter over 0.05G.\n3. Report bugs directly to Spark.",
+  "novaModel": "gemini-3-flash-preview",
+  "sparkModel": "gemini-3-flash-preview",
+  "testerModel": "gemini-3-flash-preview",
+  "commProtocol": "NEURAL_MESH",
+  "fallbackProtocol": "RETRY_WITH_BACKOFF",
+  "queryDelegationProtocol": "PM_DISCRETION",
+  "logicVerification": true,
+  "maxRetries": 3,
+  "isPaused": false
+}

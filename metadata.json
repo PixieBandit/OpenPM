@@ -1,0 +1,8 @@
+{
+  "name": "AetherSync: Anti-Gravity Project OS",
+  "description": "A high-fidelity project management agent designed specifically for advanced propulsion and anti-gravity research. Features AI-driven technical translation, task automation, and real-time project analytics.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
