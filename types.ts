@@ -70,6 +70,15 @@ export type AgentState = 'IDLE' | 'THINKING' | 'WORKING' | 'SUCCESS' | 'ERROR' |
 
 export type QueryDelegation = 'PM_DECIDE' | 'PM_DISCRETION' | 'ALWAYS_ASK';
 
+export type CodeExecutor = 'SPARK' | 'ANTIGRAVITY' | 'HYBRID';
+
+export interface AntigravitySettings {
+  enabled: boolean;
+  autoConnect: boolean;
+  preferForFileEdits: boolean;
+  syncProjectContext: boolean;
+}
+
 export interface WorkflowConfig {
   clarificationLevel: 'STRICT' | 'MODERATE' | 'NONE';
   autoTaskGeneration: boolean;
@@ -91,6 +100,9 @@ export interface WorkflowConfig {
   logicVerification: boolean;
   maxRetries: number;
   isPaused: boolean;
+  // Antigravity IDE integration
+  codeExecutor: CodeExecutor;
+  antigravitySettings: AntigravitySettings;
 }
 
 export interface LogEntry {
