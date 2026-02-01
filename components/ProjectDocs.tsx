@@ -15,6 +15,23 @@ interface ProjectDocsProps {
 
 const CATEGORIES: ProjectDoc['category'][] = ['ARCH', 'SPEC', 'RESEARCH', 'LOG'];
 
+// Escape special regex characters to prevent regex injection
+const escapeRegex = (str: string): string => {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+};
+
+// Escape HTML to prevent XSS attacks
+const escapeHtml = (str: string): string => {
+  const htmlEscapes: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  };
+  return str.replace(/[&<>"']/g, (char) => htmlEscapes[char]);
+};
+
 const ProjectDocs: React.FC<ProjectDocsProps> = ({ 
   docs, onAddDoc, onUpdateDoc, isSyncing, externalSelectedId, onSelectDoc
 }) => {
@@ -55,7 +72,8 @@ const ProjectDocs: React.FC<ProjectDocsProps> = ({
   };
 
   const renderMarkdown = (content: string) => {
-    let html = content
+    // First escape HTML to prevent XSS, then apply markdown transforms
+    let html = escapeHtml(content)
       .replace(/^### (.*$)/gim, '<h3 class="text-xs font-black text-indigo-400 uppercase tracking-[0.3em] mt-8 mb-4 flex items-center gap-2"><span class="w-1 h-3 bg-indigo-500 rounded-full"></span>$1</h3>')
       .replace(/^## (.*$)/gim, '<h2 class="text-lg font-black text-white uppercase tracking-tighter mt-10 mb-6 border-b border-slate-800 pb-3">$1</h2>')
       .replace(/\*\*(.*?)\*\*/g, '<strong class="text-white font-bold">$1</strong>')
@@ -63,9 +81,10 @@ const ProjectDocs: React.FC<ProjectDocsProps> = ({
       .replace(/\n\n/g, '<div class="h-4"></div>')
       .replace(/\n/g, '<br />');
 
-    // Simple search highlighting
+    // Search highlighting with escaped regex to prevent injection
     if (searchTerm.length > 2) {
-      const regex = new RegExp(`(${searchTerm})`, 'gi');
+      const escapedTerm = escapeRegex(searchTerm);
+      const regex = new RegExp(`(${escapedTerm})`, 'gi');
       html = html.replace(regex, '<mark class="bg-indigo-500/30 text-white rounded px-0.5">$1</mark>');
     }
 

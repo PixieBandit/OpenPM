@@ -2,11 +2,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Task, ProjectDoc, WorkflowConfig, ChatMessage } from "../types";
 import { getAccessToken } from "./auth";
-
-// Backend proxy server (bypasses CORS, uses Cloud AI Companion)
-const BACKEND_URL = 'http://localhost:3001/api';
-// Fallback for API key (direct to Gemini API)
-const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+import { API_BASE_URL, GEMINI_API_BASE } from "../config";
 
 // AbortController management for request cancellation
 let activeControllers: AbortController[] = [];
@@ -143,8 +139,13 @@ async function geminiRequest(
       });
 
       async function* streamGenerator() {
-        for await (const chunk of result) {
-          yield chunk.text ?? '';
+        try {
+          for await (const chunk of result) {
+            yield chunk.text ?? '';
+          }
+        } finally {
+          // Clean up controller when stream completes or errors
+          removeController(controller);
         }
       }
       return streamGenerator();
@@ -156,11 +157,11 @@ async function geminiRequest(
       // For now, if streaming is requested but we must use proxy, we might need a fetch stream reader if backend supports it.
       // Assuming backend *might* not stream fully yet, we'll try to use fetch stream if possible or fallback.
       if (config?.stream) {
-        url = `${BACKEND_URL}/generate/stream`; // Heuristic: try a stream endpoint or flag
+        url = `${API_BASE_URL}/generate/stream`; // Heuristic: try a stream endpoint or flag
         // Actually, let's stick to the /generate endpoint but check if we can read the body.
-        url = `${BACKEND_URL}/generate`;
+        url = `${API_BASE_URL}/generate`;
       } else {
-        url = `${BACKEND_URL}/generate`;
+        url = `${API_BASE_URL}/generate`;
       }
 
       headers['Authorization'] = `Bearer ${auth.token}`;
@@ -218,31 +219,36 @@ async function geminiRequest(
         const decoder = new TextDecoder();
         let buffer = '';
 
-        while (true) {
-          const { done, value } = await reader!.read();
-          if (done) break;
+        try {
+          while (true) {
+            const { done, value } = await reader!.read();
+            if (done) break;
 
-          const chunk = decoder.decode(value, { stream: true });
-          buffer += chunk;
+            const chunk = decoder.decode(value, { stream: true });
+            buffer += chunk;
 
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || ''; // Keep the last incomplete line in buffer
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || ''; // Keep the last incomplete line in buffer
 
-          for (const line of lines) {
-            const trimmedLine = line.trim();
-            if (!trimmedLine || trimmedLine === ': keep-alive') continue;
+            for (const line of lines) {
+              const trimmedLine = line.trim();
+              if (!trimmedLine || trimmedLine === ': keep-alive') continue;
 
-            if (trimmedLine.startsWith('data: ')) {
-              const dataStr = trimmedLine.slice(6);
-              try {
-                const data = JSON.parse(dataStr);
-                const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (text) yield text;
-              } catch (e) {
-                // Ignore parse errors for partial chunks or connection messages
+              if (trimmedLine.startsWith('data: ')) {
+                const dataStr = trimmedLine.slice(6);
+                try {
+                  const data = JSON.parse(dataStr);
+                  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                  if (text) yield text;
+                } catch (e) {
+                  // Ignore parse errors for partial chunks or connection messages
+                }
               }
             }
           }
+        } finally {
+          // Clean up controller when stream completes or errors
+          removeController(controller);
         }
       }
       return fetchStreamGenerator();
@@ -599,7 +605,7 @@ export const listAvailableModels = async () => {
     if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
 
     // Use backend proxy for list models
-    const res = await fetch(`${BACKEND_URL}/models`, {
+    const res = await fetch(`${API_BASE_URL}/models`, {
       method: 'GET',
       headers
     });
